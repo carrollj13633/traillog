@@ -16,7 +16,6 @@ The app name is not final (TrailLog is already taken on Google Play; Trailvane i
 - `css/app.css`, `icons/`, `vendor/leaflet/`
 - `tests/`: `geo.test.js` and `platform.test.js` (Node), `e2e.py` (Playwright)
 - `docs/HANDOFF.md`: running log of who did what and what is next
-- `docs/ci.yml.example`: unit-test CI workflow; move it to `.github/workflows/ci.yml` (needs a token with the `workflow` scope)
 - `android/`: the Android wrapper (to be added)
 
 ## Rules
