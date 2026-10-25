@@ -5,7 +5,7 @@ Newest entry first. Add an entry at the end of every work session.
 ## 2026-10-24: Grok Bot
 - Built the web app (recording, maps, GPX/KML, platform detection, offline). 30 unit tests and 171 headless-Chrome checks pass; not yet tested on a real phone by the assistant (students report it works well).
 - Published to GitHub Pages: https://carrollj13633.github.io/traillog/
-- Set up this contributor workflow (AGENTS.md, templates, protected `main`). The CI workflow is saved as `docs/ci.yml.example` because the GitHub login on the box lacks the `workflow` scope; Jim or any token with that scope can move it to `.github/workflows/ci.yml`.
+- Set up this contributor workflow (AGENTS.md, templates, protected `main`) and turned on CI (unit tests run on every pull request).
 - In progress: Android wrapper with Capacitor and true background location (foreground service), plus Play Store materials. It will arrive as a pull request adding `android/`.
 
 ## Open decisions
