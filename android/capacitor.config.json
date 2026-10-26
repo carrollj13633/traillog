@@ -1,0 +1,15 @@
+{
+  "appId": "com.carrollj13633.traillog",
+  "appName": "TrailLog",
+  "webDir": "www",
+  "backgroundColor": "#f4f1ea",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "useLegacyBridge": true,
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false,
+    "appendUserAgent": "TrailLog/1.0.0 (Android app; +https://github.com/carrollj13633/traillog)"
+  }
+}

@@ -1,0 +1,79 @@
+apply plugin: 'com.android.application'
+
+// Default: ../../traillog-android-signing/keystore.properties relative to android/. Override with -PtraillogSigning=/path/to/keystore.properties
+def traillogSigningFile = project.hasProperty('traillogSigning')
+    ? new File(project.property('traillogSigning'))
+    : new File(rootDir, '../../traillog-android-signing/keystore.properties')   // sibling folder outside the project
+def traillogSigning = null
+if (traillogSigningFile.exists()) {
+    traillogSigning = new Properties()
+    traillogSigningFile.withInputStream { traillogSigning.load(it) }
+}
+
+android {
+    namespace = "com.carrollj13633.traillog"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.carrollj13633.traillog"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // Release signing: credentials are read from OUTSIDE the project (see keystore.properties handling below),
+    // so no secret ever lives in this repository. Without that file, release builds are left unsigned.
+    signingConfigs {
+        release {
+            if (traillogSigning != null) {
+                storeFile file(traillogSigning.getProperty('storeFile'))
+                storePassword traillogSigning.getProperty('storePassword')
+                keyAlias traillogSigning.getProperty('keyAlias')
+                keyPassword traillogSigning.getProperty('keyPassword')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (traillogSigning != null) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
