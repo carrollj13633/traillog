@@ -1,0 +1,876 @@
+diff -ruN a/css/app.css b/css/app.css
+--- a/css/app.css	2026-10-24 21:02:37.013025696 -0400
++++ b/css/app.css	2026-10-24 21:02:37.005025743 -0400
+@@ -223,3 +223,9 @@
+ 
+ /* keep the map attribution visible above the overlapping bottom sheet */
+ .map-wrap .leaflet-bottom { margin-bottom: 16px; }
++
++/* Android app only */
++.warn-text { color: var(--warn); }
++.bad-text { color: var(--bad); }
++.native-app { -webkit-tap-highlight-color: transparent; }
++.native-app body { overscroll-behavior: none; }
+diff -ruN a/index.html b/index.html
+--- a/index.html	2026-10-24 21:02:37.033025580 -0400
++++ b/index.html	2026-10-24 21:02:37.005025743 -0400
+@@ -131,6 +131,7 @@
+   <script src="vendor/leaflet/leaflet.js"></script>
+   <script src="js/geo.js"></script>
+   <script src="js/platform.js"></script>
++  <script src="js/native.js"></script>
+   <script src="js/db.js"></script>
+   <script src="js/app.js"></script>
+ </body>
+diff -ruN a/js/app.js b/js/app.js
+--- a/js/app.js	2026-10-24 21:02:37.017025673 -0400
++++ b/js/app.js	2026-10-24 21:02:37.005025743 -0400
+@@ -2,6 +2,10 @@
+ (function () {
+   'use strict';
+   var G = window.Geo, P = window.Platform, DB = window.TLDb;
++  var NB = window.NativeBridge || { native: false };   // native.js: only active inside the Android app
++  var NATIVE = !!NB.native;
++  var PRIVACY_URL = 'https://carrollj13633.github.io/traillog/privacy.html';
++  function noop() { /* ignore */ }
+ 
+   /* ================= helpers ================= */
+   function $(id) { return document.getElementById(id); }
+@@ -43,11 +47,17 @@
+     return el;
+   }
+ 
++  var modalStack = [];   // open dialogs, newest last (the Android back button closes the top one)
+   function modal(o) {
+     var overlay = h('div', { class: 'overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': o.title });
+     var box = h('div', { class: 'modal' });
+     overlay.append(box);
+-    function close() { overlay.remove(); if (o.onClose) o.onClose(); }
++    var entry = { close: close, dismissible: o.dismissible !== false };
++    function close() {
++      var i = modalStack.indexOf(entry); if (i >= 0) modalStack.splice(i, 1);
++      overlay.remove(); if (o.onClose) o.onClose();
++    }
++    modalStack.push(entry);
+     box.append(h('h2', null, o.title));
+     if (o.body) append(box, o.body);
+     var acts = h('div', { class: 'm-actions' });
+@@ -80,7 +90,10 @@
+     rec: null, points: [], stats: null, segLatLngs: [], rejected: 0,
+     wake: 'off', wakeSentinel: null,
+     tracks: [], current: null,
+-    view: 'record', installEvt: null, dbInfo: { persistent: true }
++    view: 'record', installEvt: null, dbInfo: { persistent: true },
++    // Android app only
++    nat: null, nativeId: null, nativeBg: false, appVersion: '1.0.0',
++    keepAwake: store.get('keepAwake', !NATIVE)   // website keeps the screen on; the app records with the screen off
+   };
+   var PLAT = P.detectPlatform(readEnv());
+ 
+@@ -92,12 +105,19 @@
+       maxTouchPoints: navigator.maxTouchPoints || 0,
+       navStandalone: navigator.standalone,
+       displayStandalone: mm('(display-mode: standalone)') || mm('(display-mode: fullscreen)') || mm('(display-mode: minimal-ui)'),
+-      uaData: uad ? { platform: uad.platform, mobile: uad.mobile, brands: uad.brands } : null
++      uaData: uad ? { platform: uad.platform, mobile: uad.mobile, brands: uad.brands } : null,
++      native: NATIVE
+     };
+   }
+ 
+   function filterOpts() { return { maxAccuracy: S.maxAcc }; }
+-  function applyTheme() { document.documentElement.setAttribute('data-theme', S.theme); }
++  function applyTheme() {
++    document.documentElement.setAttribute('data-theme', S.theme);
++    if (NATIVE) {
++      var dark = S.theme === 'dark' || (S.theme === 'auto' && !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
++      NB.setSystemBars(dark);
++    }
++  }
+ 
+   /* ================= banners ================= */
+   var banners = {};
+@@ -118,15 +138,26 @@
+         text: 'This page is not served over HTTPS, so your phone will block location access. Open the https:// address instead.',
+         actions: [{ label: 'Details', onClick: function () { showErrorModal('insecure'); } }] });
+     } else clearBanner('insecure');
+-    if (PLAT.backgroundRisk !== 'low' && !sessionStorage.getItem('tl.bgDismissed')) {
++    if (NATIVE) {
++      var n = S.nat;
++      if (n && n.backgroundDeclared && n.foreground === 'granted' && n.background !== 'granted' && !sessionStorage.getItem('tl.bgDismissed')) {
++        setBanner('bg', { type: 'warn', title: 'Background location is off',
++          text: 'Recording can stop when the screen is off or another app is open. Set TrailLog’s location permission to “Allow all the time”.',
++          actions: [{ label: 'Open settings', onClick: function () { NB.openAppSettings().catch(noop); } }],
++          dismissible: true, onDismiss: function () { try { sessionStorage.setItem('tl.bgDismissed', '1'); } catch (e) { /* ignore */ } } });
++      } else clearBanner('bg');
++    } else if (PLAT.backgroundRisk !== 'low' && !sessionStorage.getItem('tl.bgDismissed')) {
+       setBanner('bg', { type: 'warn',
+         title: PLAT.os === 'ios' ? 'iPhone/iPad: keep the screen on' : 'Android: keep the screen on',
+         text: P.getGuide(PLAT).background,
+         dismissible: true, onDismiss: function () { try { sessionStorage.setItem('tl.bgDismissed', '1'); } catch (e) { /* ignore */ } } });
+     }
+     if (S.perm === 'denied') {
+-      setBanner('perm', { type: 'error', title: 'Location is blocked', text: 'Allow location for this site to record tracks.',
++      setBanner('perm', { type: 'error', title: 'Location is blocked', text: NATIVE ? 'Allow location for TrailLog to record tracks.' : 'Allow location for this site to record tracks.',
+         actions: [{ label: 'How to fix', onClick: function () { showErrorModal(1); } }] });
++    } else if (S.perm === 'approximate') {
++      setBanner('perm', { type: 'warn', title: 'Precise location is off', text: 'TrailLog needs precise location to record a trail.',
++        actions: [{ label: 'Fix it', onClick: function () { showNativeDenied('approximate'); } }] });
+     } else clearBanner('perm');
+     if (!S.dbInfo.persistent) {
+       setBanner('storage', { type: 'warn', title: 'Storage unavailable',
+@@ -136,7 +167,10 @@
+ 
+   function showErrorModal(code, extraActions) {
+     var help = P.errorHelp(code, PLAT);
+-    var actions = (extraActions || []).concat([{ label: 'Close', kind: 'alt' }]);
++    var actions = (extraActions || []).slice();
++    if (NATIVE && code === 1) actions.push({ label: 'Open app settings', kind: 'start', onClick: function () { NB.openAppSettings().catch(noop); } });
++    if (NATIVE && (code === 2 || code === 3)) actions.push({ label: 'Open location settings', kind: 'start', onClick: function () { NB.openLocationSettings().catch(noop); } });
++    actions.push({ label: 'Close', kind: 'alt' });
+     modal({ title: help.title, body: [h('p', null, help.message), list(help.steps), h('p', { class: 'note' }, 'Detected: ' + PLAT.label)], actions: actions });
+   }
+ 
+@@ -263,6 +297,7 @@
+ 
+   /* ================= geolocation ================= */
+   function queryPermission() {
++    if (NATIVE) return refreshNativeStatus();
+     if (!navigator.permissions || !navigator.permissions.query) { S.perm = 'unsupported'; return Promise.resolve(); }
+     return navigator.permissions.query({ name: 'geolocation' }).then(function (st) {
+       S.perm = st.state;
+@@ -276,16 +311,40 @@
+     if (S.view === 'compat') renderCompat();
+   }
+ 
++  function wantBackground() { return !!(S.rec && S.rec.state === 'recording'); }
+   function startWatch() {
+-    if (S.watchId != null) return true;
++    if (S.watchId != null) {
++      // Native: the foreground service (with its notification) must only run while recording.
++      if (NATIVE && S.nativeBg !== wantBackground()) stopWatch(true); else return true;
++    }
++    if (NATIVE) return startNativeWatch();
+     if (!S.secure || !('geolocation' in navigator)) return false;
+     S.watchWanted = true;
+     S.watchId = navigator.geolocation.watchPosition(onFix, onGeoError, { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+     updateChips();
+     return true;
+   }
++  function startNativeWatch() {
++    S.watchWanted = true;
++    if (S.perm !== 'granted') return false;
++    S.nativeBg = wantBackground();
++    S.nativeId = NB.startWatch({ background: S.nativeBg }, onFix, onGeoError);
++    S.watchId = S.nativeId;
++    updateChips();
++    return true;
++  }
++  /** Native only: switch between the plain watcher and the background (foreground-service) watcher. */
++  function syncNativeWatch() {
++    if (!NATIVE || S.watchId == null || S.nativeBg === wantBackground()) return;
++    stopWatch(true);
++    if (!document.hidden) startWatch();
++  }
+   function stopWatch(keepWanted) {
+-    if (S.watchId != null) { navigator.geolocation.clearWatch(S.watchId); S.watchId = null; }
++    if (S.watchId != null) {
++      if (NATIVE) { NB.stopWatch(S.nativeId).catch(noop); S.nativeId = null; S.nativeBg = false; }
++      else navigator.geolocation.clearWatch(S.watchId);
++      S.watchId = null;
++    }
+     if (!keepWanted) S.watchWanted = false;
+     updateChips();
+   }
+@@ -302,7 +361,11 @@
+     clearBanner('geo');
+     if (S.perm !== 'granted') { S.perm = 'granted'; refreshStaticBanners(); }
+     updateMe(fix);
+-    if (S.rec && S.rec.state === 'recording') recordFix(fix);
++    if (S.rec && S.rec.state === 'recording') {
++      recordFix(fix);
++      // WebView timers are throttled while the screen is off, so also save the heartbeat from fixes.
++      if (NATIVE && Date.now() - (S.rec.heartbeat || 0) > 15000) saveMeta();
++    }
+     updateChips(); updateStats();
+   }
+ 
+@@ -329,9 +392,143 @@
+   }
+   function tryAgain() {
+     stopWatch();
++    if (NATIVE) { nativeStartFlow(false).then(function (ok) { if (ok && startWatch()) toast('Trying again…'); }); return; }
+     if (startWatch()) toast('Trying again…');
+   }
+ 
++
++  /* ================= Android app: permissions, disclosure, settings, back button ================= */
++  /** Store a status from the native side and derive S.perm (granted | approximate | denied | prompt). */
++  function applyNativeStatus(st) {
++    if (!st) return st;
++    S.nat = st;
++    var perm = st.foreground === 'granted' ? 'granted'
++      : st.foreground === 'approximate' ? 'approximate'
++      : (store.get('fgAsked', false) ? 'denied' : 'prompt');
++    var changed = perm !== S.perm;
++    S.perm = perm;
++    if (changed) onPermChange(); else { refreshStaticBanners(); updateChips(); }
++    return st;
++  }
++  function refreshNativeStatus() {
++    return NB.checkStatus().then(applyNativeStatus).catch(function (e) { console.warn('status failed', e); return null; });
++  }
++  function waitVisible() {
++    return new Promise(function (resolve) {
++      var n = 0;
++      (function check() { if (!document.hidden || ++n > 30) resolve(); else setTimeout(check, 100); })();
++    });
++  }
++  /** Resolves true on the affirmative button, false on the other button or when dismissed. */
++  function confirmModal(o) {
++    return new Promise(function (resolve) {
++      var done = false;
++      function fin(v) { if (!done) { done = true; resolve(v); } }
++      modal({ title: o.title, body: o.body, onClose: function () { fin(false); },
++        actions: [{ label: o.yes, kind: 'start', onClick: function () { fin(true); } }, { label: o.no, kind: 'alt', onClick: function () { fin(false); } }] });
++    });
++  }
++  function showNativeDenied(kind) {
++    if (kind !== 'approximate') { showErrorModal(1); return; }
++    modal({ title: 'Precise location needed', body: [
++      h('p', null, 'You chose approximate location. That is only accurate to a mile or two, which is too coarse to record a trail.'),
++      h('p', null, 'Open the app settings, tap Location, and turn on “Use precise location”.')],
++      actions: [{ label: 'Open app settings', kind: 'start', onClick: function () { NB.openAppSettings().catch(noop); } }, { label: 'Close', kind: 'alt' }] });
++  }
++
++  /** Prominent disclosure (shown before the system location prompt), then the foreground location request. */
++  function nativeEnsureForeground(st) {
++    if (st.foreground === 'granted') return Promise.resolve(true);
++    var accepted = store.get('disclosureV1', false)
++      ? Promise.resolve(true)
++      : confirmModal({
++        title: 'How TrailLog uses your location',
++        body: [
++          h('p', null, 'TrailLog collects your phone’s precise location while you record a trail, so it can draw your path and work out distance, speed, and elevation.'),
++          h('p', null, h('strong', null, 'This continues in the background: '), 'while a recording is running, TrailLog keeps collecting location even when the app is closed or the screen is off. A notification is shown until you tap Pause or Stop.'),
++          h('p', null, 'Your recordings are stored only on this phone. TrailLog has no account and no server, and it never uploads or shares your location. Map pictures (tiles) are downloaded from OpenStreetMap, Esri, or OpenTopoMap when you view the map.'),
++          h('p', { class: 'note' }, 'Next, Android will ask you to allow location access.')],
++        yes: 'Agree and continue', no: 'No thanks'
++      }).then(function (ok) { if (ok) store.set('disclosureV1', true); else toast('TrailLog needs location access to record a trail.'); return ok; });
++    return accepted.then(function (ok) {
++      if (!ok) return false;
++      store.set('fgAsked', true);
++      return NB.requestForeground().then(applyNativeStatus).then(waitVisible).then(function () {
++        if (S.nat && S.nat.foreground === 'granted') return true;
++        showNativeDenied(S.nat ? S.nat.foreground : 'denied');
++        return false;
++      });
++    });
++  }
++  /** Notifications (Android 13+), then the optional "Allow all the time" step. Never blocks recording. */
++  function nativeEnsureExtras() {
++    var chain = Promise.resolve();
++    chain = chain.then(function () {
++      if (S.nat.notifications === 'granted' || store.get('notifAsked', false)) return;
++      store.set('notifAsked', true);
++      return NB.requestNotifications().then(applyNativeStatus).catch(noop);
++    });
++    chain = chain.then(function () {
++      var n = S.nat;
++      if (!n.backgroundDeclared || n.background === 'granted' || store.get('bgAsked', false)) return;
++      return confirmModal({
++        title: 'Record with the screen off',
++        body: [
++          h('p', null, 'For the most reliable recording while your screen is off or another app is open, choose “Allow all the time” for location.'),
++          h('p', null, 'On the next screen, pick “Allow all the time”. TrailLog still collects location only while a recording is running, and you can change this at any time in Android Settings.')],
++        yes: 'Continue', no: 'Skip'
++      }).then(function (ok) {
++        store.set('bgAsked', true);
++        if (!ok) return;
++        return NB.requestBackground().then(applyNativeStatus).catch(noop);
++      });
++    });
++    return chain.then(waitVisible).then(function () { return true; });
++  }
++  /** full=true also covers notifications and background location (used when recording). */
++  function nativeStartFlow(full) {
++    return refreshNativeStatus().then(function (st) {
++      if (!st) { toast('Could not check location permission.'); return false; }
++      if (!st.locationEnabled) { showErrorModal(2); return false; }
++      return nativeEnsureForeground(st).then(function (ok) {
++        if (!ok) return false;
++        return full ? nativeEnsureExtras() : true;
++      });
++    });
++  }
++  /** One-time, non-blocking battery tip after the first recording has started (the service is already running). */
++  function maybeBatteryTip() {
++    if (!NATIVE || !S.nat || S.nat.batteryUnrestricted || store.get('batteryAsked', false)) return;
++    if (!S.rec || S.rec.state !== 'recording') return;
++    store.set('batteryAsked', true);
++    confirmModal({
++      title: 'Keep recording reliable',
++      body: [
++        h('p', null, 'Some phones stop apps that run for a long time to save battery. For long hikes, set TrailLog’s battery use to “Unrestricted” (or “Don’t optimize”).'),
++        h('p', { class: 'note' }, 'Recording keeps running while you do this. You can also find it later in Help & settings.')],
++      yes: 'Open battery settings', no: 'Not now'
++    }).then(function (ok) { if (ok) NB.openBatterySettings().catch(noop); });
++  }
++
++  function onBackButton() {
++    var top = modalStack[modalStack.length - 1];
++    if (top) { if (top.dismissible) top.close(); return; }
++    if (S.view !== 'record') { back(); return; }
++    // Root screen: keep a recording alive by sending the app to the background instead of closing it.
++    if (S.rec) NB.minimize().catch(noop); else NB.exit().catch(noop);
++  }
++  function initNative() {
++    document.documentElement.classList.add('native-app');
++    NB.onBack(onBackButton).catch(noop);
++    NB.appInfo().then(function (i) { if (i && i.version) { S.appVersion = i.version; if (S.view === 'help') renderHelp(); } }).catch(noop);
++    NB.cleanupExports();
++    if (window.matchMedia) {
++      var mq = window.matchMedia('(prefers-color-scheme: dark)');
++      var onTheme = function () { if (S.theme === 'auto') applyTheme(); };
++      if (mq.addEventListener) mq.addEventListener('change', onTheme);
++    }
++  }
++
+   /** Checks that must pass before we ask for location; returns false after showing a tailored error. */
+   function preflight(afterRetry) {
+     if (!S.secure) { showErrorModal('insecure'); return false; }
+@@ -362,7 +559,16 @@
+   function stopTimers() { clearInterval(timers.tick); clearInterval(timers.beat); timers.tick = timers.beat = null; }
+ 
+   function onStart() {
++    if (S.rec || S.starting) return;
++    if (NATIVE) {
++      S.starting = true;
++      nativeStartFlow(true).then(function (ok) { S.starting = false; if (ok && !S.rec) beginRecording(); }, function () { S.starting = false; });
++      return;
++    }
+     if (!preflight(function () { /* user can tap Start again once allowed */ })) return;
++    beginRecording();
++  }
++  function beginRecording() {
+     var now = Date.now();
+     S.rec = { id: uid(), name: '', startedAt: now, state: 'recording', seg: 0, elapsedBase: 0, runStart: now, heartbeat: now };
+     S.points = []; S.stats = G.createStats(); S.segLatLngs = [[]]; S.rejected = 0;
+@@ -376,6 +582,7 @@
+     if (S.lastFix) map.setView([S.lastFix.lat, S.lastFix.lon], Math.max(map.getZoom(), 16));
+     renderAll();
+     if (!S.lastFix || Date.now() - S.lastFixAt > 15000) toast('Acquiring GPS…');
++    if (NATIVE) setTimeout(maybeBatteryTip, 1500);
+   }
+ 
+   function recordFix(fix) {
+@@ -398,11 +605,19 @@
+   function pauseRecording() {
+     var r = S.rec; if (!r || r.state !== 'recording') return;
+     r.elapsedBase = elapsedMs(); r.state = 'paused';
+-    releaseWakeLock(); saveMeta(); renderAll();
++    releaseWakeLock(); saveMeta(); renderAll(); syncNativeWatch();
+   }
+   function resumeRecording() {
+     var r = S.rec; if (!r || r.state === 'recording') return;
++    if (NATIVE) {
++      nativeStartFlow(true).then(function (ok) { if (ok && S.rec === r && r.state !== 'recording') doResume(); });
++      return;
++    }
+     if (!preflight()) return;
++    doResume();
++  }
++  function doResume() {
++    var r = S.rec;
+     r.seg++; r.runStart = Date.now(); r.state = 'recording';
+     S.segLatLngs[r.seg] = [];
+     startWatch(); acquireWakeLock(); startTimers(); saveMeta(); renderAll();
+@@ -411,7 +626,7 @@
+     var r = S.rec; if (!r) return;
+     r.elapsedBase = elapsedMs(); r.state = 'stopped';
+     if (!r.name) r.name = G.defaultName(new Date(r.startedAt));
+-    releaseWakeLock(); stopTimers(); saveMeta(); renderAll();
++    releaseWakeLock(); stopTimers(); saveMeta(); renderAll(); syncNativeWatch();
+     if (S.points.length < 2) toast('Too few GPS points to save. Discard or go back and resume.', { ms: 5000 });
+   }
+   function reopenRecording() { // from review back to paused so the user can continue
+@@ -440,7 +655,7 @@
+   }
+   function resetRecording() {
+     S.rec = null; S.points = []; S.stats = null; S.segLatLngs = []; S.rejected = 0;
+-    stopTimers(); releaseWakeLock(); redrawLive(); renderAll();
++    stopTimers(); releaseWakeLock(); redrawLive(); renderAll(); syncNativeWatch();
+     if (!document.hidden && S.perm !== 'granted' && S.watchId != null && !S.lastFix) stopWatch();
+   }
+ 
+@@ -485,6 +700,7 @@
+   /* ================= wake lock ================= */
+   var wakeSupported = 'wakeLock' in navigator;
+   function acquireWakeLock() {
++    if (NATIVE && !S.keepAwake) return Promise.resolve();   // the app records with the screen off
+     if (!wakeSupported) { S.wake = 'unsupported'; updateChips(); return Promise.resolve(); }
+     if (S.wakeSentinel && !S.wakeSentinel.released) return Promise.resolve();
+     return navigator.wakeLock.request('screen').then(function (s) {
+@@ -508,10 +724,11 @@
+       if (S.rec) saveMeta();
+       if (!S.rec || S.rec.state !== 'recording') stopWatch(true); // save battery when idle in background
+     } else {
++      if (NATIVE) refreshNativeStatus();   // the user may have changed permissions in Settings
+       if (S.watchWanted || S.perm === 'granted') startWatch();
+       if (S.rec && S.rec.state === 'recording') {
+         acquireWakeLock();
+-        if (Date.now() - S.lastFixAt > 30000) toast('Welcome back. GPS may have paused while the app was in the background.', { ms: 5000 });
++        if (!NATIVE && Date.now() - S.lastFixAt > 30000) toast('Welcome back. GPS may have paused while the app was in the background.', { ms: 5000 });
+       }
+       updateChips(); updateStats();
+     }
+@@ -531,11 +748,12 @@
+     }
+     g.className = cls; g.textContent = txt;
+ 
+-    var pc = $('perm-chip'), pm = { granted: ['Location allowed', 'ok'], prompt: ['Location: will ask', ''], denied: ['Location blocked', 'bad'], unsupported: ['Location: asks on Start', ''], unknown: ['Location: –', ''] }[S.perm] || ['Location: –', ''];
++    var pc = $('perm-chip'), pm = { granted: ['Location allowed', 'ok'], prompt: ['Location: will ask', ''], denied: ['Location blocked', 'bad'], approximate: ['Location: approximate', 'bad'], unsupported: ['Location: asks on Start', ''], unknown: ['Location: –', ''] }[S.perm] || ['Location: –', ''];
+     pc.className = 'chip ' + pm[1]; pc.textContent = pm[0];
+ 
+     var w = $('wake-chip'), wm;
+-    if (!wakeSupported) wm = ['Screen: keep awake manually', 'warn'];
++    if (NATIVE && !S.keepAwake) wm = (S.rec && S.rec.state === 'recording') ? ['Records with screen off', 'ok'] : ['Screen can sleep', ''];
++    else if (!wakeSupported) wm = ['Screen: keep awake manually', 'warn'];
+     else if (S.wake === 'on') wm = ['Screen awake (lock on)', 'ok'];
+     else if (S.wake === 'lost') wm = ['Wake lock lost', 'warn'];
+     else if (S.wake === 'failed') wm = ['Wake lock denied', 'warn'];
+@@ -646,7 +864,7 @@
+     var acts = $('detail-actions'); acts.replaceChildren();
+     append(acts, [
+       h('button', { type: 'button', class: 'btn alt', onclick: renameCurrent }, 'Rename'),
+-      navigator.share ? h('button', { type: 'button', class: 'btn alt', onclick: function () { shareTrack(t); } }, 'Share') : null,
++      (navigator.share || NATIVE) ? h('button', { type: 'button', class: 'btn alt', onclick: function () { shareTrack(t); } }, 'Share') : null,
+       h('button', { type: 'button', class: 'btn', onclick: function () { downloadText(slug(t.name) + '.gpx', G.buildGpx([t]), 'application/gpx+xml'); } }, 'Export GPX'),
+       h('button', { type: 'button', class: 'btn', onclick: function () { downloadText(slug(t.name) + '.kml', G.buildKml([t]), 'application/vnd.google-earth.kml+xml'); } }, 'Export KML'),
+       h('button', { type: 'button', class: 'btn danger', onclick: deleteCurrent }, 'Delete')]);
+@@ -733,6 +951,12 @@
+ 
+   /* ---- export / import / share ---- */
+   function downloadText(name, text, mime) {
++    if (NATIVE) { // WebViews cannot download blobs: write to the cache folder and open the Android share sheet
++      NB.shareFile({ filename: name, text: text, title: name, dialogTitle: 'Export ' + name }).catch(function (e) {
++        if (!/cancel/i.test((e && e.message) || '')) toast('Could not export: ' + ((e && e.message) || 'unknown error'), { ms: 6000 });
++      });
++      return;
++    }
+     var blob = new Blob([text], { type: mime + ';charset=utf-8' });
+     var url = URL.createObjectURL(blob);
+     var a = h('a', { href: url, download: name, style: 'display:none' });
+@@ -742,6 +966,12 @@
+   }
+   function shareTrack(t) {
+     var summary = (t.name || 'Track') + ' – ' + G.formatDistance(t.distance, S.units) + ' in ' + G.formatDuration(t.duration);
++    if (NATIVE) {
++      NB.shareFile({ filename: slug(t.name) + '.gpx', text: G.buildGpx([t]), title: t.name, summary: summary, dialogTitle: 'Share track' }).catch(function (e) {
++        if (!/cancel/i.test((e && e.message) || '')) toast('Could not share: ' + ((e && e.message) || 'unknown error'), { ms: 6000 });
++      });
++      return;
++    }
+     var file;
+     try { file = new File([G.buildGpx([t])], slug(t.name) + '.gpx', { type: 'application/gpx+xml' }); } catch (e) { file = null; }
+     var p;
+@@ -802,12 +1032,21 @@
+           h('button', { type: 'button', class: 'btn small', onclick: function () { go('compat', { push: true }); } }, 'Run compatibility check'),
+           h('button', { type: 'button', class: 'btn small alt', onclick: showOnboarding }, 'Show intro'),
+           S.installEvt ? h('button', { type: 'button', class: 'btn small start', onclick: promptInstall }, 'Install app') : null)),
++      NATIVE ? nativePermissionsSection() : null,
+       h('div', { class: 'help-section' }, h('h2', null, 'Setup guide for this device'), guideSections(g.setup)),
+       h('div', { class: 'help-section' }, h('h2', null, 'If location is blocked or denied'), list(g.denied)),
+-      h('div', { class: 'help-section' }, h('h2', null, 'Background GPS limits'), h('p', null, g.background),
+-        h('p', { class: 'note' }, 'Websites cannot track in the background the way native apps can. If the screen locks, expect gaps; TrailLog joins them with a straight line.')),
++      NATIVE
++        ? h('div', { class: 'help-section' }, h('h2', null, 'Background recording'), h('p', null, g.background),
++          h('p', { class: 'note' }, 'Recording stops if you swipe TrailLog away from the recent-apps list or force-stop it. Your points are saved as they arrive, and TrailLog offers to resume the next time you open it.'))
++        : h('div', { class: 'help-section' }, h('h2', null, 'Background GPS limits'), h('p', null, g.background),
++          h('p', { class: 'note' }, 'Websites cannot track in the background the way native apps can. If the screen locks, expect gaps; TrailLog joins them with a straight line.')),
+       h('div', { class: 'help-section' }, h('h2', null, 'Settings'),
+         h('div', { class: 'setting' }, h('span', null, 'Units'), seg([['mi', 'Miles'], ['km', 'Kilometers']], S.units, setUnits)),
++        NATIVE ? h('div', { class: 'setting' }, h('span', null, 'Keep screen on while recording'), seg([['on', 'On'], ['off', 'Off']], S.keepAwake ? 'on' : 'off', function (v) {
++          S.keepAwake = v === 'on'; store.set('keepAwake', S.keepAwake);
++          if (S.keepAwake) { if (S.rec && S.rec.state === 'recording') acquireWakeLock(); } else releaseWakeLock();
++          renderHelp();
++        })) : null,
+         h('div', { class: 'setting' }, h('span', null, 'Theme'), seg([['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], S.theme, function (v) { S.theme = v; store.set('theme', v); applyTheme(); renderHelp(); })),
+         h('div', { class: 'setting' }, h('label', { for: 'acc-select' }, 'Ignore fixes less accurate than'),
+           (function () {
+@@ -816,8 +1055,31 @@
+             return sel;
+           })())),
+       h('div', { class: 'help-section' }, h('h2', null, 'About'),
+-        h('p', null, 'TrailLog stores everything on this device (IndexedDB). There is no account and no server. Map tiles come from OpenStreetMap, Esri, and OpenTopoMap and are cached as you browse so recently viewed areas work offline.'),
+-        h('p', { class: 'note' }, 'Version 1.0.0')));
++        NATIVE
++          ? h('p', null, 'TrailLog stores everything on this phone. There is no account and no server, and your recordings are never uploaded. Everything works offline except the map pictures, which are downloaded from OpenStreetMap, Esri, or OpenTopoMap while you view the map.')
++          : h('p', null, 'TrailLog stores everything on this device (IndexedDB). There is no account and no server. Map tiles come from OpenStreetMap, Esri, and OpenTopoMap and are cached as you browse so recently viewed areas work offline.'),
++        NATIVE ? h('p', null, h('a', { href: PRIVACY_URL, target: '_blank', rel: 'noopener' }, 'Privacy policy')) : null,
++        h('p', { class: 'note' }, 'Version ' + S.appVersion)));
++  }
++  function nativePermissionsSection() {
++    var n = S.nat || {};
++    function row(label, text, kind, btn) {
++      return h('div', { class: 'setting' }, h('span', null, label, ': ', h('strong', { class: kind === 'ok' ? '' : kind === 'bad' ? 'bad-text' : 'warn-text' }, text)), btn || null);
++    }
++    function btn(label, fn) { return h('button', { type: 'button', class: 'btn small alt', onclick: function () { fn().catch(noop); } }, label); }
++    var fg = n.foreground === 'granted' ? ['Precise, allowed', 'ok'] : n.foreground === 'approximate' ? ['Approximate only', 'bad'] : ['Not allowed', 'bad'];
++    var rows = [row('Location', fg[0], fg[1], n.foreground === 'granted' ? null : btn('Open settings', NB.openAppSettings))];
++    if (n.backgroundDeclared) {
++      rows.push(row('Background location', n.background === 'granted' ? 'Allowed all the time' : 'Only while app is open', n.background === 'granted' ? 'ok' : 'warn',
++        n.background === 'granted' ? null : btn('Open settings', NB.openAppSettings)));
++    }
++    rows.push(row('Notifications', n.notifications === 'granted' ? 'Allowed' : 'Blocked (the recording notification may be hidden)', n.notifications === 'granted' ? 'ok' : 'warn',
++      n.notifications === 'granted' ? null : btn('Open settings', NB.openNotificationSettings)));
++    rows.push(row('Battery', n.batteryUnrestricted ? 'Unrestricted' : 'Optimized (may stop long recordings)', n.batteryUnrestricted ? 'ok' : 'warn',
++      n.batteryUnrestricted ? null : btn('Open settings', NB.openBatterySettings)));
++    if (n.powerSave) rows.push(row('Battery Saver', 'On (can slow GPS updates)', 'warn', btn('Open settings', NB.openBatterySettings)));
++    if (n.locationEnabled === false) rows.push(row('Device location', 'Off', 'bad', btn('Turn on', NB.openLocationSettings)));
++    return h('div', { class: 'help-section' }, h('h2', null, 'Permissions & battery'), rows);
+   }
+   function setUnits(u) {
+     S.units = u; store.set('units', u);
+@@ -851,14 +1113,21 @@
+       PLAT.standalone ? 'Running as an installed app.' : 'Running in a browser tab.' + (PLAT.os === 'ios' ? ' Adding to the Home Screen is recommended.' : ' You can install it from the browser menu.')]);
+     rows.push(['HTTPS / secure context', S.secure ? ok : fail,
+       S.secure ? 'Secure (' + location.protocol + '//' + location.host + '). Location, service workers, and wake lock are allowed.' : 'Not secure (' + location.protocol + '//' + location.host + '). Browsers block GPS, the service worker, and wake lock here. Use https://.']);
+-    rows.push(['Geolocation API', 'geolocation' in navigator ? ok : fail, 'geolocation' in navigator ? 'Available.' : 'Not available in this browser.']);
+-    var pm = { granted: [ok, 'Granted. Tracking can start without a prompt.'], prompt: [info, 'Not decided yet. The browser will ask when you tap Start.'], denied: [fail, 'Denied. Open Help for the fix for your device.'],
++    if (NATIVE) rows.push(['Location source', ok, 'Android Fused Location Provider via a foreground service (works with the screen off).']);
++    else rows.push(['Geolocation API', 'geolocation' in navigator ? ok : fail, 'geolocation' in navigator ? 'Available.' : 'Not available in this browser.']);
++    var pm = { approximate: [fail, 'Approximate only. Turn on “Use precise location” in the app settings.'], granted: [ok, 'Granted. Tracking can start without a prompt.'], prompt: [info, 'Not decided yet. The browser will ask when you tap Start.'], denied: [fail, 'Denied. Open Help for the fix for your device.'],
+       unsupported: [info, 'This browser cannot report the permission state (common on iOS Safari). You will be asked when you tap Start.'], unknown: [info, 'Checking…'] }[S.perm] || [info, S.perm];
+     rows.push(['Location permission', pm[0], pm[1]]);
+-    rows.push(['Screen Wake Lock', wakeSupported ? (S.secure ? ok : warn) : warn,
+-      wakeSupported ? 'Supported. The screen is kept awake while recording' + (S.wake === 'on' ? ' (currently holding a lock).' : '.') : 'Not supported. Keep the screen on manually (iOS: Settings > Display & Brightness > Auto-Lock).']);
++    if (NATIVE && S.nat) {
++      if (S.nat.backgroundDeclared) rows.push(['Background location', S.nat.background === 'granted' ? ok : warn, S.nat.background === 'granted' ? 'Allowed all the time.' : 'Only while the app is open. Recording may stop with the screen off on some phones.']);
++      rows.push(['Notifications', S.nat.notifications === 'granted' ? ok : warn, S.nat.notifications === 'granted' ? 'Allowed. The recording notification is visible.' : 'Blocked. Recording still works, but the notification may be hidden.']);
++      rows.push(['Battery optimization', S.nat.batteryUnrestricted ? ok : warn, S.nat.batteryUnrestricted ? 'Unrestricted.' : 'Optimized. Set TrailLog to Unrestricted for long recordings.']);
++    }
++    rows.push([NATIVE ? 'Keep screen on' : 'Screen Wake Lock', NATIVE ? (S.keepAwake ? ok : info) : wakeSupported ? (S.secure ? ok : warn) : warn,
++      NATIVE ? (S.keepAwake ? 'On while recording and the app is open.' : 'Off. Recording continues with the screen off.') : wakeSupported ? 'Supported. The screen is kept awake while recording' + (S.wake === 'on' ? ' (currently holding a lock).' : '.') : 'Not supported. Keep the screen on manually (iOS: Settings > Display & Brightness > Auto-Lock).']);
+     rows.push(['Background GPS', PLAT.backgroundRisk === 'high' ? warn : PLAT.backgroundRisk === 'medium' ? warn : ok, P.getGuide(PLAT).background]);
+-    rows.push(['Web Share', navigator.share ? (navigator.canShare ? ok : info) : info, navigator.share ? 'Available. Files can be shared where the OS allows it.' : 'Not available. Use Export GPX/KML to save files.']);
++    if (NATIVE) rows.push(['Export & share', ok, 'Export GPX/KML opens the Android share sheet so you can save to Drive, send by email, and more.']);
++    else rows.push(['Web Share', navigator.share ? (navigator.canShare ? ok : info) : info, navigator.share ? 'Available. Files can be shared where the OS allows it.' : 'Not available. Use Export GPX/KML to save files.']);
+     return rows;
+   }
+   function renderCompat() {
+@@ -869,7 +1138,7 @@
+     function paint() {
+       card.replaceChildren();
+       var rows = compatRows();
+-      rows.splice(7, 0, asyncRows.idb || ['IndexedDB', 'info', 'Testing…'], asyncRows.sw || ['Service worker (offline)', 'info', 'Checking…'], asyncRows.storage || ['Persistent storage', 'info', 'Checking…']);
++      rows.splice(rows.length - 1, 0, asyncRows.idb || ['IndexedDB', 'info', 'Testing…'], asyncRows.sw || ['Service worker (offline)', 'info', 'Checking…'], asyncRows.storage || ['Persistent storage', 'info', 'Checking…']);
+       var sym = { ok: '✓', warn: '!', fail: '×', info: 'i' };
+       rows.forEach(function (r) {
+         card.append(h('div', { class: 'compat-row' }, h('span', { class: 'compat-ic ' + r[1], 'aria-label': r[1] }, sym[r[1]]),
+@@ -892,6 +1161,7 @@
+     DB.selfTest().then(function (okk) { asyncRows.idb = ['IndexedDB', okk ? 'ok' : 'fail', okk ? 'Working. In-progress recordings are saved continuously.' : 'Read/write test failed.']; },
+       function (e) { asyncRows.idb = ['IndexedDB', 'fail', 'Unavailable (' + (e && e.message ? e.message : e) + '). Recordings will be kept in memory only.']; }).then(paint);
+     (function () {
++      if (NATIVE) { asyncRows.sw = ['Offline files', 'ok', 'The app’s files are bundled inside the app, so it works offline. Only map pictures need a connection.']; paint(); return; }
+       if (!S.secure) { asyncRows.sw = ['Service worker (offline)', 'fail', 'Needs HTTPS. Offline mode is unavailable on this page.']; paint(); return; }
+       if (!('serviceWorker' in navigator)) { asyncRows.sw = ['Service worker (offline)', 'fail', 'Not supported by this browser.']; paint(); return; }
+       navigator.serviceWorker.getRegistration().then(function (reg) {
+@@ -900,7 +1170,8 @@
+         paint();
+       });
+     })();
+-    if (navigator.storage && navigator.storage.persisted) {
++    if (NATIVE) { asyncRows.storage = ['Storage', 'ok', 'Private app storage. Tracks stay until you delete them, clear the app’s data, or uninstall.']; paint(); }
++    else if (navigator.storage && navigator.storage.persisted) {
+       navigator.storage.persisted().then(function (p) {
+         asyncRows.storage = ['Persistent storage', p ? 'ok' : 'info', p ? 'Granted. The browser will not evict your tracks.' : 'Not granted. Browsers may clear data for sites you rarely visit; export tracks you care about. Installing to the Home Screen helps.'];
+         paint();
+@@ -918,7 +1189,10 @@
+     if (opts && opts.push) { try { history.pushState({ v: view }, ''); } catch (e) { /* ignore */ } }
+     if (view === 'record') { syncBase('live'); setTimeout(function () { map.invalidateSize(); }, 30); }
+     if (view === 'tracks') renderTrackList();
+-    if (view === 'help') renderHelp();
++    if (view === 'help') {
++      renderHelp();
++      if (NATIVE) { var before = JSON.stringify(S.nat); refreshNativeStatus().then(function () { if (S.view === 'help' && JSON.stringify(S.nat) !== before) renderHelp(); }); }
++    }
+     if (view === 'compat') renderCompat();
+     if (view === 'detail' && detailMap) setTimeout(function () { detailMap.invalidateSize(); }, 30);
+   }
+@@ -929,6 +1203,11 @@
+ 
+   /* ================= service worker ================= */
+   function registerSW() {
++    if (NATIVE) { // The app bundles its files; a service worker would only risk serving stale copies after an update.
++      if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r) { r.unregister(); }); }).catch(noop);
++      if (window.caches) caches.keys().then(function (ks) { ks.filter(function (k) { return k.indexOf('traillog-') === 0; }).forEach(function (k) { caches.delete(k); }); }).catch(noop);
++      return;
++    }
+     if (!S.secure || !('serviceWorker' in navigator)) return;
+     navigator.serviceWorker.register('sw.js').then(function (reg) {
+       reg.addEventListener('updatefound', function () {
+@@ -947,6 +1226,15 @@
+ 
+   /* ================= init ================= */
+   function onLocate() {
++    if (NATIVE) {
++      nativeStartFlow(false).then(function (ok) {
++        if (!ok) return;
++        S.follow = true; $('locate-btn').classList.add('on');
++        if (S.watchId == null) { startWatch(); toast('Finding your location…'); }
++        if (S.lastFix) map.setView([S.lastFix.lat, S.lastFix.lon], Math.max(map.getZoom(), 16));
++      });
++      return;
++    }
+     if (!preflight()) return;
+     S.follow = true; $('locate-btn').classList.add('on');
+     if (S.watchId == null) { startWatch(); toast('Finding your location…'); }
+@@ -984,6 +1272,7 @@
+       if (S.perm === 'granted' && S.secure) startWatch(); // no prompt can appear when already granted
+     });
+     registerSW();
++    if (NATIVE) initNative();
+     if (!store.get('onboarded', false)) setTimeout(showOnboarding, 400);
+   }
+ 
+diff -ruN a/js/native.js b/js/native.js
+--- a/js/native.js	1969-12-31 19:00:00.000000000 -0500
++++ b/js/native.js	2026-10-24 21:02:37.005025743 -0400
+@@ -0,0 +1,148 @@
++/* TrailLog – native bridge for the Android app (Capacitor).
++ *
++ * In a normal browser (website / PWA) `window.Capacitor` does not exist, so NativeBridge.native is false and
++ * nothing in this file does anything. Inside the Android app it wraps:
++ *   - @capacitor-community/background-geolocation  (foreground-service location, works with the screen off)
++ *   - TrailLogNative (local plugin)                (permission prompts, status, settings shortcuts)
++ *   - @capacitor/filesystem + @capacitor/share     (GPX/KML export; blob downloads do not work in WebViews)
++ *   - @capacitor/app                               (back button, minimize, version)
++ *   - SystemBars                                   (status/navigation bar icon colors)
++ *
++ * Written as a factory so Node tests can inject a fake Capacitor object.
++ */
++(function (root, factory) {
++  if (typeof module === 'object' && module.exports) module.exports = { create: factory };
++  else root.NativeBridge = factory(root.Capacitor);
++})(typeof self !== 'undefined' ? self : this, function create(cap) {
++  'use strict';
++
++  var isNative = false;
++  try {
++    isNative = !!(cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform() &&
++      (typeof cap.getPlatform !== 'function' || cap.getPlatform() === 'android'));
++  } catch (e) { isNative = false; }
++
++  var api = { native: isNative };
++  if (!isNative) return api;
++
++  var cache = {};
++  function plugin(name) {
++    if (!cache[name]) cache[name] = cap.registerPlugin(name);
++    return cache[name];
++  }
++
++  /* ---------- notification text shown while recording (Android requires it) ---------- */
++  api.NOTIFICATION_TITLE = 'TrailLog is recording';
++  api.NOTIFICATION_TEXT = 'Recording your trail. Tap to open TrailLog.';
++
++  /* ---------- permissions & settings ---------- */
++  api.checkStatus = function () { return plugin('TrailLogNative').checkStatus(); };
++  api.requestForeground = function () { return plugin('TrailLogNative').requestForeground(); };
++  api.requestBackground = function () { return plugin('TrailLogNative').requestBackground(); };
++  api.requestNotifications = function () { return plugin('TrailLogNative').requestNotifications(); };
++  api.openAppSettings = function () { return plugin('TrailLogNative').openAppSettings(); };
++  api.openBatterySettings = function () { return plugin('TrailLogNative').openBatterySettings(); };
++  api.openLocationSettings = function () { return plugin('TrailLogNative').openLocationSettings(); };
++  api.openNotificationSettings = function () { return plugin('TrailLogNative').openNotificationSettings(); };
++
++  /* ---------- location watching ---------- */
++  /** Convert the plugin's location object into the shape of a browser GeolocationPosition. */
++  api.toPosition = function (loc) {
++    return {
++      coords: {
++        latitude: loc.latitude, longitude: loc.longitude, accuracy: loc.accuracy,
++        altitude: loc.altitude, altitudeAccuracy: loc.altitudeAccuracy,
++        heading: loc.bearing, speed: loc.speed
++      },
++      timestamp: loc.time || Date.now()
++    };
++  };
++  /** Convert a plugin error into a browser-style GeolocationPositionError (1 = denied, 2 = unavailable). */
++  api.toGeoError = function (err) {
++    var msg = (err && err.message) || 'Location unavailable';
++    if (err && err.code === 'NOT_AUTHORIZED') {
++      return { code: /disabled/i.test(msg) ? 2 : 1, message: msg };
++    }
++    return { code: 2, message: msg };
++  };
++
++  var handles = {}, nextHandle = 1;
++  /**
++   * Start a watcher. With opts.background the plugin runs a foreground service with a persistent notification,
++   * so fixes keep arriving with the screen off. Permissions are NOT requested here (the app does that first,
++   * after showing its disclosure). Returns a handle string for stopWatch().
++   * The plugin's service binds a moment after launch; if it is not ready yet we retry for a few seconds.
++   */
++  api.startWatch = function (opts, onPosition, onError) {
++    opts = opts || {};
++    var o = { requestPermissions: false, stale: false, distanceFilter: 0 };
++    if (opts.background) {
++      o.backgroundTitle = api.NOTIFICATION_TITLE;
++      o.backgroundMessage = api.NOTIFICATION_TEXT;
++    }
++    var hd = { stopped: false, pluginId: null, tries: 0 };
++    var key = 'w' + (nextHandle++);
++    handles[key] = hd;
++    function attempt() {
++      if (hd.stopped) return;
++      hd.tries++;
++      plugin('BackgroundGeolocation').addWatcher(o, function (loc, err) {
++        if (hd.stopped) return;
++        if (err) {
++          if (/Service not running/i.test(err.message || '') && hd.tries < 25) { setTimeout(attempt, 200); return; }
++          if (onError) onError(api.toGeoError(err));
++          return;
++        }
++        if (loc && typeof loc.latitude === 'number') onPosition(api.toPosition(loc));
++      }).then(function (id) {
++        if (hd.stopped) { plugin('BackgroundGeolocation').removeWatcher({ id: id }).catch(function () { /* ignore */ }); }
++        else hd.pluginId = id;
++      }, function (e) { if (!hd.stopped && onError) onError(api.toGeoError(e)); });
++    }
++    attempt();
++    return key;
++  };
++  api.stopWatch = function (key) {
++    var hd = handles[key]; delete handles[key];
++    if (!hd) return Promise.resolve();
++    hd.stopped = true;
++    if (hd.pluginId == null) return Promise.resolve();
++    return plugin('BackgroundGeolocation').removeWatcher({ id: hd.pluginId }).catch(function () { /* ignore */ });
++  };
++
++  /* ---------- export / share ---------- */
++  function safeName(name) {
++    var n = String(name || 'track').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
++    return n || 'track';
++  }
++  /** Write text to the app cache folder, then open the Android share sheet with that file. */
++  api.shareFile = function (o) {
++    var fs = plugin('Filesystem'), sh = plugin('Share');
++    var filename = safeName(o.filename);
++    return fs.writeFile({ path: 'exports/' + filename, data: o.text, directory: 'CACHE', encoding: 'utf8', recursive: true })
++      .then(function (res) {
++        return sh.share({ title: o.title || filename, text: o.summary || undefined, files: [res.uri], dialogTitle: o.dialogTitle || 'Export track' });
++      });
++  };
++  /** Remove files left over from earlier exports. */
++  api.cleanupExports = function () {
++    return plugin('Filesystem').rmdir({ path: 'exports', directory: 'CACHE', recursive: true }).catch(function () { /* none yet */ });
++  };
++
++  /* ---------- app shell ---------- */
++  api.onBack = function (handler) { return plugin('App').addListener('backButton', handler); };
++  api.minimize = function () { return plugin('App').minimizeApp(); };
++  api.exit = function () { return plugin('App').exitApp(); };
++  api.appInfo = function () { return plugin('App').getInfo(); };
++  api.onAppStateChange = function (handler) { return plugin('App').addListener('appStateChange', handler); };
++  /** Status bar sits on the always-green top bar (light icons). Navigation bar follows the page theme. */
++  api.setSystemBars = function (dark) {
++    var sb = plugin('SystemBars');
++    return Promise.all([
++      sb.setStyle({ bar: 'StatusBar', style: 'DARK' }),
++      sb.setStyle({ bar: 'NavigationBar', style: dark ? 'DARK' : 'LIGHT' })
++    ]).catch(function () { /* cosmetic only */ });
++  };
++
++  return api;
++});
+diff -ruN a/js/platform.js b/js/platform.js
+--- a/js/platform.js	2026-10-24 21:02:37.021025650 -0400
++++ b/js/platform.js	2026-10-24 21:02:37.005025743 -0400
+@@ -9,10 +9,19 @@
+ 
+   /**
+    * env: { ua, maxTouchPoints, navStandalone (boolean|undefined), displayStandalone (boolean),
+-   *        uaData ({platform, mobile, brands:[{brand}]}|null) }
++   *        uaData ({platform, mobile, brands:[{brand}]}|null),
++   *        native (true when running inside the Capacitor Android app) }
+    */
+   function detectPlatform(env) {
+     env = env || {};
++    if (env.native) {
++      // The Android app (Capacitor WebView + native background location). Not a browser.
++      return {
++        os: 'android', browser: 'app', device: 'Android phone/tablet', engine: 'chromium', standalone: true, native: true,
++        key: 'android-app', label: 'Android · TrailLog app', backgroundRisk: 'app',
++        evidence: ['Capacitor native Android app']
++      };
++    }
+     var ua = env.ua || '';
+     var uad = env.uaData || null;
+     var touch = env.maxTouchPoints || 0;
+@@ -71,7 +80,7 @@
+     else if (os === 'android') key = browser === 'firefox' ? 'android-firefox' : browser === 'samsung' ? 'android-samsung' : 'android-chrome';
+     else key = 'desktop';
+ 
+-    var names = { safari: 'Safari', chrome: 'Chrome', firefox: 'Firefox', edge: 'Edge', opera: 'Opera', samsung: 'Samsung Internet', duckduckgo: 'DuckDuckGo', webview: 'in-app browser', other: 'unknown browser' };
++    var names = { safari: 'Safari', chrome: 'Chrome', firefox: 'Firefox', edge: 'Edge', opera: 'Opera', samsung: 'Samsung Internet', duckduckgo: 'DuckDuckGo', webview: 'in-app browser', app: 'TrailLog app', other: 'unknown browser' };
+     var label = device + ' · ' + names[browser] + (os === 'ios' && browser !== 'safari' ? ' (WebKit)' : '') +
+       (standalone ? ' · installed app' : ' · browser tab');
+ 
+@@ -89,6 +98,7 @@
+     'android-chrome': ['Tap the ⋮ menu and choose "Install app" (or "Add to Home screen").', 'Confirm. TrailLog appears in your app drawer.'],
+     'android-firefox': ['Tap the ⋮ menu and choose "Install" (or "Add to Home screen").', 'Confirm. TrailLog appears on your home screen.'],
+     'android-samsung': ['Tap the ☰ menu, then "Add page to" > "Home screen" (or choose "Install app" if offered).', 'Confirm to add TrailLog.'],
++    'android-app': ['TrailLog is already installed as an app. Nothing more to do.'],
+     'desktop': ['In Chrome or Edge, click the install icon at the right end of the address bar (or menu > "Install TrailLog").', 'GPS on desktop uses Wi-Fi or IP lookups, so accuracy is usually poor. A phone is best for recording.']
+   };
+ 
+@@ -122,6 +132,12 @@
+       { h: 'Install', steps: INSTALL['android-samsung'] },
+       { h: 'Battery notes', steps: ['Turn off Battery Saver / Power saving while recording.', 'Settings > Apps > Samsung Internet > Battery > "Unrestricted" (and remove it from "Sleeping apps").', 'Keep the screen on and the browser in front.'] }
+     ],
++    'android-app': [
++      { h: 'Allow precise location', steps: ['When TrailLog asks, tap "While using the app" (or "Allow") and keep "Precise" selected.', 'For recording with the screen off, TrailLog then asks you to choose "Allow all the time". Pick that if you want reliable background recording. TrailLog only reads your location while you are recording or looking at the map.', 'To review it later: Android Settings > Apps > TrailLog > Permissions > Location.'] },
++      { h: 'Allow notifications', steps: ['On Android 13 and newer, allow notifications. Android requires a visible notification while an app records your location in the background.', 'The notification says "TrailLog is recording". Tap it to return to the app.'] },
++      { h: 'Battery settings', steps: ['Settings > Apps > TrailLog > Battery > "Unrestricted" (some phones call it "Don\'t optimize" or "No restrictions"). On Samsung phones also remove TrailLog from "Sleeping apps".', 'Turn off Battery Saver for long recordings; it can slow down GPS updates.'] },
++      { h: 'While recording', steps: ['Tap Start. You can lock the screen or switch to other apps; TrailLog keeps recording and shows a notification.', 'Open TrailLog again to Pause or Stop. Do not swipe TrailLog away from the recent-apps list while recording, because that ends the recording service.'] }
++    ],
+     'desktop': [
+       { h: 'Allow location', steps: ['Click "Allow" when the browser asks, or click the lock icon in the address bar > Site settings > Location > Allow.', 'Desktop browsers estimate position from Wi-Fi/IP, so fixes may be inaccurate and filtered out. Use a phone for real tracking.'] },
+       { h: 'Install', steps: INSTALL.desktop }
+@@ -135,12 +151,14 @@
+     'android-chrome': ['Tap the lock (or tune) icon in the address bar > Permissions > Location > Allow, then reload.', 'Or Chrome ⋮ > Settings > Site settings > Location, and remove this site from the Blocked list.', 'Also check Android Settings > Apps > Chrome > Permissions > Location is not "Don\'t allow", and that Location is on.'],
+     'android-firefox': ['Tap the lock icon in the address bar > Permissions > Location > Allow, then reload.', 'Or ⋮ > Settings > Site permissions > Location and clear the block for this site.', 'Check Android Settings > Apps > Firefox > Permissions > Location.'],
+     'android-samsung': ['Tap the lock icon in the address bar > Permissions > Location > Allow, then reload.', 'Or ☰ > Settings > Sites and downloads > Site permissions > Location.', 'Check Android Settings > Apps > Samsung Internet > Permissions > Location.'],
++    'android-app': ['Tap "Open app settings" (or open Android Settings > Apps > TrailLog > Permissions > Location).', 'Choose "Allow only while using the app" or "Allow all the time", and turn on "Use precise location".', 'Make sure Location is turned on in the quick settings, then come back to TrailLog and tap Start again.'],
+     'desktop': ['Click the lock icon in the address bar > Site settings > Location > Allow, then reload.', 'On macOS also check System Settings > Privacy & Security > Location Services for your browser; on Windows check Settings > Privacy & security > Location.']
+   };
+ 
+   var BACKGROUND = {
+     high: 'iOS suspends web pages when the screen locks or you switch apps, which pauses GPS. Keep the screen on and this app in front while recording.',
+     medium: 'Android browsers may pause GPS when the screen locks or you switch apps, especially with Battery Saver on. Keep the screen on and this app in front while recording.',
++    app: 'TrailLog records in the background with an Android foreground service, so recording continues when the screen is off or another app is open. A notification is shown while recording. Choose "Allow all the time" for location, and set TrailLog\'s battery use to "Unrestricted", for the most reliable results.',
+     low: 'Desktop browsers keep running in the background, but location is usually coarse (Wi-Fi/IP based).'
+   };
+ 
+diff -ruN a/sw.js b/sw.js
+--- a/sw.js	2026-10-24 21:02:37.013025696 -0400
++++ b/sw.js	2026-10-24 21:02:37.005025743 -0400
+@@ -1,6 +1,6 @@
+ /* TrailLog service worker: precache the app shell, cache map tiles opportunistically. */
+ 'use strict';
+-const VERSION = 'v2';
++const VERSION = 'v3';
+ const SHELL_CACHE = 'traillog-shell-' + VERSION;
+ const TILE_CACHE = 'traillog-tiles-v1';
+ const MAX_TILES = 1200;
+@@ -8,7 +8,7 @@
+ const SHELL = [
+   './', 'index.html', 'manifest.webmanifest',
+   'css/app.css',
+-  'js/geo.js', 'js/platform.js', 'js/db.js', 'js/app.js',
++  'js/geo.js', 'js/platform.js', 'js/native.js', 'js/db.js', 'js/app.js',
+   'vendor/leaflet/leaflet.css', 'vendor/leaflet/leaflet.js',
+   'vendor/leaflet/images/layers.png', 'vendor/leaflet/images/layers-2x.png',
+   'vendor/leaflet/images/marker-icon.png', 'vendor/leaflet/images/marker-icon-2x.png', 'vendor/leaflet/images/marker-shadow.png',

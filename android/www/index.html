@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en-US" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>TrailLog – GPS Trail Recorder</title>
+  <meta name="description" content="Record your hikes, runs, and rides with GPS. Works offline. No account, no backend.">
+  <meta name="theme-color" content="#1f6f4a">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="TrailLog">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M2 20 9 7l4 7 2-3 7 9z"/></svg>
+      <span>TrailLog</span>
+    </div>
+    <button id="units-btn" class="pill" type="button" aria-label="Toggle units between miles and kilometers">mi</button>
+    <button id="help-btn" class="pill round" type="button" aria-label="Help and compatibility">?</button>
+  </header>
+
+  <div id="banners" aria-live="polite"></div>
+
+  <main id="main">
+    <!-- RECORD -->
+    <section id="view-record" class="view active" aria-label="Record">
+      <div class="map-wrap">
+        <div id="map" role="application" aria-label="Map"></div>
+        <button id="locate-btn" class="map-btn" type="button" aria-label="Show my location">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.94 3A8.99 8.99 0 0 0 13 3.06V1h-2v2.06A8.99 8.99 0 0 0 3.06 11H1v2h2.06A8.99 8.99 0 0 0 11 20.94V23h2v-2.06A8.99 8.99 0 0 0 20.94 13H23v-2h-2.06zM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14z"/></svg>
+        </button>
+      </div>
+      <div class="sheet" id="sheet">
+        <div class="chips">
+          <span id="gps-chip" class="chip">GPS off</span>
+          <span id="perm-chip" class="chip">Location: –</span>
+          <span id="wake-chip" class="chip">Screen: –</span>
+        </div>
+        <div class="stats" id="stats">
+          <div class="stat big"><span class="lbl">Time</span><span class="val" id="st-time">0:00</span></div>
+          <div class="stat big"><span class="lbl">Distance</span><span class="val" id="st-dist">0.00 mi</span></div>
+          <div class="stat"><span class="lbl">Speed</span><span class="val" id="st-speed">–</span></div>
+          <div class="stat"><span class="lbl">Avg speed</span><span class="val" id="st-avg">–</span></div>
+          <div class="stat"><span class="lbl">Elev. gain</span><span class="val" id="st-gain">–</span></div>
+          <div class="stat"><span class="lbl">Points</span><span class="val" id="st-pts">0</span></div>
+        </div>
+        <p id="rec-note" class="note" hidden>
+          Keep this screen on and the app open. Browsers may pause GPS when the screen locks or the tab is in the background.
+        </p>
+        <div id="finish-box" class="finish" hidden>
+          <label for="name-input" class="lbl">Track name</label>
+          <input id="name-input" type="text" maxlength="80" autocomplete="off" enterkeyhint="done">
+        </div>
+        <div class="controls" id="controls"></div>
+      </div>
+    </section>
+
+    <!-- TRACKS -->
+    <section id="view-tracks" class="view scroll" aria-label="Saved tracks">
+      <div class="page-head">
+        <h1>Saved tracks</h1>
+        <div class="row">
+          <button id="import-btn" class="btn small" type="button">Import GPX</button>
+          <button id="export-all-btn" class="btn small" type="button">Export all</button>
+        </div>
+        <input id="import-input" type="file" accept=".gpx,.xml,application/gpx+xml,application/xml,text/xml,application/octet-stream" multiple hidden>
+      </div>
+      <ul id="track-list" class="track-list"></ul>
+    </section>
+
+    <!-- TRACK DETAIL -->
+    <section id="view-detail" class="view scroll" aria-label="Track details">
+      <div class="page-head">
+        <button id="detail-back" class="btn small ghost" type="button">‹ Back</button>
+        <h1 id="detail-name">Track</h1>
+      </div>
+      <p class="note" id="detail-sub"></p>
+      <div class="detail-map-wrap"><div id="map-detail" role="application" aria-label="Track map"></div></div>
+      <div class="detail-stats stats" id="detail-stats"></div>
+      <div class="card">
+        <h2>Elevation profile</h2>
+        <div class="chart-tip" id="chart-tip" aria-live="polite">Touch the chart to inspect</div>
+        <canvas id="chart" role="img" aria-label="Elevation profile chart"></canvas>
+        <p id="chart-empty" class="note" hidden>This track has no elevation data. Many phones only report altitude with a good GPS fix.</p>
+      </div>
+      <div class="actions" id="detail-actions"></div>
+    </section>
+
+    <!-- HELP -->
+    <section id="view-help" class="view scroll" aria-label="Help and settings">
+      <div class="page-head"><h1>Help &amp; settings</h1></div>
+      <div id="help-body"></div>
+    </section>
+
+    <!-- COMPATIBILITY -->
+    <section id="view-compat" class="view scroll" aria-label="Compatibility check">
+      <div class="page-head">
+        <button id="compat-back" class="btn small ghost" type="button">‹ Back</button>
+        <h1>Compatibility check</h1>
+      </div>
+      <div id="compat-body"></div>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Main">
+    <button class="tab active" data-view="record" type="button">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>
+      <span>Record</span>
+    </button>
+    <button class="tab" data-view="tracks" type="button">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M3 5h2v2H3V5zm4 0h14v2H7V5zM3 11h2v2H3v-2zm4 0h14v2H7v-2zM3 17h2v2H3v-2zm4 0h14v2H7v-2z"/></svg>
+      <span>Tracks</span>
+    </button>
+    <button class="tab" data-view="help" type="button">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 17h-2v-2h2v2zm2.07-7.75-.9.92A3.5 3.5 0 0 0 13 15h-2v-.5a4.5 4.5 0 0 1 1.32-3.18l1.24-1.26A2 2 0 1 0 10 8H8a4 4 0 1 1 7.07 3.25z"/></svg>
+      <span>Help</span>
+    </button>
+  </nav>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script src="js/geo.js"></script>
+  <script src="js/platform.js"></script>
+  <script src="js/native.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

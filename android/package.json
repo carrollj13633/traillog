@@ -1,0 +1,30 @@
+{
+  "name": "traillog-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TrailLog: GPS trail recorder. Capacitor Android wrapper around the TrailLog web app.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "python3 tests/e2e.py",
+    "test:e2e-native": "python3 tests/e2e_native.py",
+    "sync": "cap sync android",
+    "build:debug": "cap sync android && cd android && ./gradlew assembleDebug",
+    "build:release": "cap sync android && cd android && ./gradlew bundleRelease",
+    "assets": "python3 tools/generate_assets.py"
+  },
+  "dependencies": {
+    "@capacitor-community/background-geolocation": "^1.3.1",
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3"
+  }
+}
